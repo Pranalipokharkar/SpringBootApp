@@ -1,0 +1,69 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION        = "us-east-1"
+        AWS_ACCOUNT_ID    = "054037106953"
+        ECR_REPO          = "java-repo"
+        IMAGE_TAG         = "latest"
+        ECS_CLUSTER       = "java-cluster"
+        ECS_SERVICE       = "java-service"
+            }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Pranalipokharkar/SpringBootApp.git'
+            }
+        }
+
+        stage('Build and Test') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+ stage('Static Code Analysis') {
+      environment {
+        SONAR_URL = "http://34.207.205.232:9000"
+      }
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
+          sh 'mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=${SONAR_URL}'
+        }
+      }
+    }
+
+        stage('Trivy Scan File System') { 
+            steps { 
+                sh """
+                trivy fs --format table -o $WORKSPACE/trivy-fs-report.html $WORKSPACE/SpringBootApp
+                """
+            }
+        }
+
+        stage('Build & Push Docker Image') {
+            steps {
+                script {
+                    sh """
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                    docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+                    docker tag ${ECR_REPO}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+                    docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to ECS') {
+            steps {
+                script {
+                    sh """
+                    aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment
+                    """
+                }
+            }
+        }
+    }
+}
